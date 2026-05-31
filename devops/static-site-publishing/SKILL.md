@@ -49,8 +49,7 @@ metadata:
 | **主题 CSS** | `/opt/data/www/theme.css` |
 | **交互组件 CSS** | `/opt/data/www/interaction.css` |
 | **交互模板** | `/opt/data/www/interaction-patterns.html` |
-| **反向代理** | Dokploy 管理的 Traefik（宿主机 38.190.178.92:80/443） |
-| **容器名** | `daqiezi-hermes` |
+| **反向代理** | 自托管（Docker + Traefik / nginx） |
 
 ## 架构
 
@@ -58,9 +57,9 @@ metadata:
 用户 → https://hermes-daqiezi.mergio.dev
        │
        ▼
-Dokploy Traefik (宿主机 38.190.178.92:443, TLS 终止)
+反向代理 (TLS 终止)
        │
-       ▼ Docker 网络 → daqiezi-hermes 容器
+       ▼ Docker 网络
        │
 nginx :80 (容器内 root 启动)
        │
@@ -72,7 +71,7 @@ nginx :80 (容器内 root 启动)
 **关键点:**
 - 静态站点由容器内 **nginx** 直接 serve（不再是 serve.py）
 - nginx 以 root 身份运行在容器内 80 端口（由 Docker entrypoint 在 `gosu hermes` 前启动）
-- Traefik 负责 TLS 终止 + 域名路由，通过 Docker 网络直连容器
+- 反向代理负责 TLS 终止 + 域名路由，通过 Docker 网络直连容器
 - serve.py 已退役；`serve-watchdog.sh` 已禁用（`/opt/data/scripts/serve-watchdog.sh.disabled`）
 - 容器重启后 nginx 自动启动（entrypoint 已配置）
 
@@ -310,7 +309,7 @@ HTTP 200 = 上线成功。
 如果返回 404:
 - 检查文件名是否在 `/opt/data/www/` 目录下
 - URL 大小写敏感: `/Org-OS` 不匹配 `org-os.html`
-- nginx 是否在运行: `ssh root@38.190.178.92 "docker exec daqiezi-hermes pgrep nginx"`
+- nginx 是否在运行: 在容器内执行 `pgrep nginx`
 
 ### Step 5: 通知用户
 
@@ -382,41 +381,32 @@ HTTP 200 = 上线成功。
 
 ## Part 4: nginx 运维
 
-**注意：nginx 运行在 `daqiezi-hermes` 容器内，以 root 身份启动（80 特权端口）。hermes 用户无权直接操作！**
+> ⚠️ nginx 运行在容器内。运维命令因部署环境而异，此处仅提供通用指引。
 
 ### 检查状态
 ```bash
-# 从宿主机检查
-ssh root@38.190.178.92 "docker exec daqiezi-hermes pgrep -a nginx"
+pgrep -a nginx
 ```
 
 ### 重启 nginx
 ```bash
-ssh root@38.190.178.92 "docker exec daqiezi-hermes /usr/sbin/nginx -s reload"
+/usr/sbin/nginx -s reload
 ```
 
-### nginx 挂了怎么办
+### 启动 nginx
 ```bash
-ssh root@38.190.178.92 "docker exec -d daqiezi-hermes /usr/sbin/nginx"
+/usr/sbin/nginx
 ```
 
 ### 测试配置
 ```bash
-ssh root@38.190.178.92 "docker exec daqiezi-hermes /usr/sbin/nginx -t"
+/usr/sbin/nginx -t
 ```
 
 ### 配置文件
 - 主配置: `/etc/nginx/nginx.conf`
 - 站点: `/etc/nginx/sites-enabled/workspace`
-- 日志: `/var/log/nginx/access.log`, `/opt/data/logs/nginx-error.log`
-
----
-
-## 添加新域名
-
-1. DNS 添加 A 记录指向 `38.190.178.92`
-2. Dokploy Traefik 添加路由规则指向 `daqiezi-hermes` 容器（Docker 网络）
-3. nginx 站点配置无需修改（`server_name _` 匹配所有域名）
+- 日志: `/var/log/nginx/access.log`
 
 ---
 
@@ -445,11 +435,11 @@ cp -r playwright-report/* /opt/data/www/mergio-e2e-report/
 
 只复制 `index.html` 会导致报告页面空白（缺少 data/ 下的 JSON）。
 
-### ⚠️ Dokploy autoDeploy 覆盖本地
+### ⚠️ autoDeploy 覆盖本地
 
-当 Dokploy 应用启用 `autoDeploy: true` 时，任何 push 到仓库的 commit 都会触发部署同步，**覆盖本地工作树**。如果有人在远端 commit 了删除测试文件的操作，本地 `git pull` 会静默删除所有未提交的本地修改。
+当部署平台启用 `autoDeploy` 时，任何 push 到仓库的 commit 都会触发部署同步，**覆盖本地工作树**。如果有人在远端 commit 了删除测试文件的操作，本地 `git pull` 会静默删除所有未提交的本地修改。
 
-**防护：** 在 mergio-web 这种 autoDeploy 项目里做测试开发时，把测试文件 git add 并 stash，或者开新分支。
+**防护：** 在 autoDeploy 项目里做测试开发时，把测试文件 git add 并 stash，或者开新分支。
 
 ---
 
@@ -465,7 +455,7 @@ cp -r playwright-report/* /opt/data/www/mergio-e2e-report/
 |------|------|------|
 | 公网 404 | 文件名不存在或大小写不匹配 | `ls /opt/data/www/`, URL 大小写敏感 |
 | 公网 404（`/vnc/*` 路径） | 文件写到了 `/opt/data/www/vnc/` — nginx 把 `/vnc/` alias 到了 noVNC 目录，不会从这里 serve 文件 | 文件移到 `/opt/data/www/` 根目录，URL 不要带 `/vnc/` 前缀 |
-| 公网 502 | nginx 挂了 | `ssh root@38.190.178.92 "docker exec -d daqiezi-hermes /usr/sbin/nginx"` |
+| 公网 502 | nginx 挂了 | 进入容器执行 `/usr/sbin/nginx` 启动 |
 | code block 乱码 | 缺少 `white-space: pre-wrap` | 加 CSS |
 | 手机排版爆炸 | 并排元素没做响应式 | 加 `@media` |
 | 长 URL 溢出 | 缺少 `word-break` | 加 `word-break: break-word` |
@@ -476,7 +466,75 @@ cp -r playwright-report/* /opt/data/www/mergio-e2e-report/
 | 拖拽完 rank 没更新 | drop 后没调 `updateRanks()` | dragend 和 drop 末尾都调 |
 | 拖拽时蓝线残留 | `dragover` 提前 `return` 前没调 `clearAllIndicators()` | 先 `clearAllIndicators()` 再 `return` |
 | 移动端拖拽无效 | 移动浏览器不支持 HTML5 DnD | 降级为点击排序（加 ↑↓ 按钮） |
-| noVNC WebSocket 连不上 | websockify 挂了 | `ssh root@38.190.178.92 "docker exec daqiezi-hermes pgrep -a websockify"`，如果没输出则启动: `ssh root@38.190.178.92 "docker exec -d daqiezi-hermes websockify 0.0.0.0:6080 localhost:5901"` |
+| noVNC WebSocket 连不上 | websockify 挂了 | 检查进程: `pgrep -a websockify`，如未运行: `websockify 0.0.0.0:6080 localhost:5901` |
+
+## E2E 测试
+
+Playwright E2E 测试的完整模式（auth fixture、i18n 选择器、DB 清理）见 `references/playwright-e2e-setup.md`。
+
+## 公共 SEO 博客
+
+This skill is for **private reporting pages** on `hermes-daqiezi.mergio.dev`.
+For public SEO/blog pages on the main MERGIO site (`mergio.ai`), use the `nextjs-blog-ssg` skill —
+it achieves perfect layout consistency by sharing the main site's Navigation + Footer via Next.js SSG.---
+
+### ⚠️ nginx 文件优先级陷阱
+
+nginx 的 `try_files` 有固定优先级：
+
+```
+请求 /mergio-e2e-report/
+  → 1. /mergio-e2e-report.html （文件优先！）
+  → 2. /mergio-e2e-report/index.html （目录次之）
+```
+
+**如果同时存在 `slug.html` 和 `slug/index.html`，`.html` 文件永远胜出。** 常见场景：之前部署了一个独立的 Playwright 自定义报告 `mergio-e2e-report.html`，后来又部署了 Playwright 原生报告到 `mergio-e2e-report/index.html`。公网访问到的永远是旧文件。
+
+**解决：** `rm /opt/data/www/mergio-e2e-report.html` 删掉旧文件，目录 `index.html` 才会生效。
+
+### ⚠️ Playwright 报告是多文件
+
+Playwright 原生 HTML 报告不是单文件 — 包含 `index.html` + `data/` 目录（JSON 数据）。部署时必须整个目录复制：
+
+```bash
+mkdir -p /opt/data/www/mergio-e2e-report
+cp -r playwright-report/* /opt/data/www/mergio-e2e-report/
+```
+
+只复制 `index.html` 会导致报告页面空白（缺少 data/ 下的 JSON）。
+
+### ⚠️ autoDeploy 覆盖本地
+
+当部署平台启用 `autoDeploy` 时，任何 push 到仓库的 commit 都会触发部署同步，**覆盖本地工作树**。如果有人在远端 commit 了删除测试文件的操作，本地 `git pull` 会静默删除所有未提交的本地修改。
+
+**防护：** 在 autoDeploy 项目里做测试开发时，把测试文件 git add 并 stash，或者开新分支。
+
+---
+
+### ⚠️ 禁止 ASCII 字符画做架构图
+
+在 HTML 报告里用 ASCII art（`┌─┐└─┘│├┤ ◄─►`）画架构图不行。用原生 HTML/CSS 分层盒子 + border 颜色编码来展示。使用 Part 2 中定义的 `.arch-diagram` / `.arch-layer` / `.arch-arrow`（从模板复制 CSS）。不要生成 `<pre>` 包裹的 ASCII 图。
+
+## 常见问题
+
+| 问题 | 原因 | 解决 |
+|------|------|------|
+| 公网访问到旧内容 | `slug.html` 文件存在，覆盖了 `slug/index.html` | `rm /opt/data/www/slug.html` 删掉旧文件 |
+|------|------|------|
+| 公网 404 | 文件名不存在或大小写不匹配 | `ls /opt/data/www/`, URL 大小写敏感 |
+| 公网 404（`/vnc/*` 路径） | 文件写到了 `/opt/data/www/vnc/` — nginx 把 `/vnc/` alias 到了 noVNC 目录，不会从这里 serve 文件 | 文件移到 `/opt/data/www/` 根目录，URL 不要带 `/vnc/` 前缀 |
+| 公网 502 | nginx 挂了 | 进入容器执行 `/usr/sbin/nginx` 启动 |
+| code block 乱码 | 缺少 `white-space: pre-wrap` | 加 CSS |
+| 手机排版爆炸 | 并排元素没做响应式 | 加 `@media` |
+| 长 URL 溢出 | 缺少 `word-break` | 加 `word-break: break-word` |
+| 飞书链接打不开 | URL 被加粗 | 裸发 URL, 不加 `**` |
+| 页面变成暗色主题 | 没引用 theme.css，自己写了内联暗色样式 | 加上 `<link rel="stylesheet" href="/theme.css">`，删掉内联暗色变量 |
+| 复选框点不动 | 用了 `<label>` + 隐藏 `<input>` | 改用 `<div>` + `onclick` + `classList.toggle` |
+| 拖拽没反应 | 忘了设 `draggable="true"` 或 `dragstart` 里缺 `e.dataTransfer.setData('text/plain', '')`（Firefox 必须） | 加 `draggable="true"` + `setData` |
+| 拖拽完 rank 没更新 | drop 后没调 `updateRanks()` | dragend 和 drop 末尾都调 |
+| 拖拽时蓝线残留 | `dragover` 提前 `return` 前没调 `clearAllIndicators()` | 先 `clearAllIndicators()` 再 `return` |
+| 移动端拖拽无效 | 移动浏览器不支持 HTML5 DnD | 降级为点击排序（加 ↑↓ 按钮） |
+| noVNC WebSocket 连不上 | websockify 挂了 | 检查进程: `pgrep -a websockify`，如未运行: `websockify 0.0.0.0:6080 localhost:5901` |
 
 ## E2E 测试
 
